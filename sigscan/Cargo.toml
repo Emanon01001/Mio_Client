@@ -1,0 +1,6 @@
+[package]
+name = "sigscan"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

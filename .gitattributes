@@ -1,0 +1,8 @@
+# Text files are stored with LF in the repository; the working tree keeps
+# what core.autocrlf gives (CRLF on Windows by default). Several files here
+# are CRLF and others LF; normalising avoids whole-file diffs between them.
+* text=auto
+
+*.rs   text diff=rust
+*.toml text
+*.md   text diff=markdown

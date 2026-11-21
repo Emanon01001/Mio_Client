@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["sigscan", "client", "injector", "sdk", "signature_checker"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+[profile.release.package.client]
+# Keep the client DLL within its distribution size budget.
+codegen-units = 1

@@ -1,0 +1,18 @@
+# Track Rust sources, TOML, the root README, the Mio SVG and git's own files.
+*
+!*/
+!*.rs
+!*.toml
+!/README.md
+!.gitignore
+!.gitattributes
+!/assets/mio-mark.svg
+
+# Never tracked, even where they contain such files: build output, local
+# investigation backups, the analyzed game and a third-party reference.
+/target/
+# Analysis notes, reports and tools stay local.
+/analysis/
+/.analysis-cache/
+/Microsoft.MinecraftUWP_*/
+/dll-oss-main/

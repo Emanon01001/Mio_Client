@@ -1,0 +1,7 @@
+[package]
+name = "mcbe-sdk"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "mcbe_sdk"
