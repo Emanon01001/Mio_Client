@@ -1,0 +1,7 @@
+[package]
+name = "mio-sdk"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "mio_sdk"

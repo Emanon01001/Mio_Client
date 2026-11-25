@@ -1,0 +1,33 @@
+[package]
+name = "signature-checker"
+version.workspace = true
+edition.workspace = true
+default-run = "mio_signature_checker"
+
+[features]
+default = ["gui"]
+gui = ["dep:eframe", "dep:png", "dep:rfd"]
+
+[lib]
+name = "mio_signature_check"
+
+[[bin]]
+name = "mio_signature_checker"
+path = "src/main.rs"
+required-features = ["gui"]
+
+[[bin]]
+name = "mio_signature_checker_cli"
+path = "src/bin/cli.rs"
+
+[dependencies]
+eframe = { workspace = true, optional = true }
+png = { workspace = true, optional = true }
+rfd = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+sigscan.workspace = true
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+workspace = true
+features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Memory"]

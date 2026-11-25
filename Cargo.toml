@@ -1,10 +1,39 @@
 [workspace]
 resolver = "2"
-members = ["sigscan", "client", "injector", "sdk", "signature_checker"]
+members = [
+    "crates/client",
+    "crates/injector",
+    "crates/sdk",
+    "crates/signature_checker",
+    "crates/sigscan",
+]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+
+# Versions shared by the crates. Each crate opts in with `workspace = true`
+# and adds the features it needs (features are additive).
+[workspace.dependencies]
+# Workspace crates
+mio-sdk = { path = "crates/sdk" }
+sigscan = { path = "crates/sigscan" }
+
+# Overlay and GUI
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "system_fonts", "accesskit"] }
+hudhook = { version = "0.9.3", default-features = false }
+rfd = "0.18.0"
+
+# Data formats
+memchr = "2.8"
+png = "0.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1.2"
+
+# Windows
+embed-resource = "3.0"
+windows-sys = "0.61"
 
 [profile.release]
 opt-level = 3

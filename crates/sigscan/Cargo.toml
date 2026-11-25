@@ -1,0 +1,9 @@
+[package]
+name = "sigscan"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# SIMD substring search for pattern anchors (already in the client via
+# serde_json).
+memchr.workspace = true

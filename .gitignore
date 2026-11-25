@@ -1,4 +1,4 @@
-# Track Rust sources, TOML, the root README, the Mio SVG and git's own files.
+# Track Rust sources, TOML, the root README, the Mio SVG and icon and git's own files.
 *
 !*/
 !*.rs
@@ -7,10 +7,15 @@
 !.gitignore
 !.gitattributes
 !/assets/mio-mark.svg
+# The app icon: the launcher build embeds these, so they must be tracked.
+!/assets/icon/mio.ico
+!/assets/icon/mio-icon-256.png
+!/assets/icon/mio-icon-1024.png
 
 # Never tracked, even where they contain such files: build output, local
 # investigation backups, the analyzed game and a third-party reference.
 /target/
+/.idea/
 # Analysis notes, reports and tools stay local.
 /analysis/
 /.analysis-cache/

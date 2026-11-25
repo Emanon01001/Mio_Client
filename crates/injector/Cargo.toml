@@ -1,0 +1,40 @@
+[package]
+name = "injector"
+version.workspace = true
+edition.workspace = true
+default-run = "mio_launcher"
+
+[[bin]]
+name = "mio_injector"
+path = "src/main.rs"
+
+[[bin]]
+name = "mio_injector_gui"
+path = "src/bin/gui.rs"
+
+[[bin]]
+name = "mio_launcher"
+path = "src/bin/mio_launcher.rs"
+
+[dependencies]
+eframe.workspace = true
+png.workspace = true
+rfd.workspace = true
+sigscan.workspace = true
+
+[build-dependencies]
+embed-resource.workspace = true
+
+[dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
