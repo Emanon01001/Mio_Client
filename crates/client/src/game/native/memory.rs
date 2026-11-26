@@ -1,6 +1,8 @@
 //! Native reads and committed-memory/vector validation.
 use std::ffi::c_void;
+use std::mem::{size_of, MaybeUninit};
 use std::sync::OnceLock;
+use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows_sys::Win32::System::Memory::{
     VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
     PAGE_GUARD, PAGE_READONLY, PAGE_READWRITE,
@@ -13,6 +15,31 @@ use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 pub(crate) unsafe fn read<T: Copy>(addr: usize) -> T {
     (addr as *const T).read_unaligned()
+}
+
+/// Copy a small native field without directly dereferencing the source.
+/// Windows reports an unreadable range or partial copy as a failed sample.
+///
+/// Safety: every bit pattern in the source must be valid for `T`.
+pub(in crate::game) unsafe fn copy_field<T: Copy>(base: usize, offset: usize) -> Option<T> {
+    let addr = base.checked_add(offset)?;
+    let len = size_of::<T>();
+    if base == 0 || addr.checked_add(len).is_none() {
+        return None;
+    }
+    let mut value = MaybeUninit::<T>::uninit();
+    let mut copied = 0;
+    let ok = ReadProcessMemory(
+        GetCurrentProcess(),
+        addr as *const c_void,
+        value.as_mut_ptr().cast(),
+        len,
+        &mut copied,
+    );
+    if ok == 0 || copied != len {
+        return None;
+    }
+    Some(value.assume_init())
 }
 
 /// Whether `len` bytes at `addr` are committed, readable memory.
@@ -256,6 +283,32 @@ mod tests {
     use windows_sys::Win32::System::Memory::{
         VirtualAlloc, VirtualFree, VirtualProtect, MEM_RELEASE, MEM_RESERVE, PAGE_NOACCESS,
     };
+    #[test]
+    fn copy_field_handles_invalid_addresses_and_overflow() {
+        let values = [1u32, 42];
+        let base = values.as_ptr() as usize;
+        unsafe {
+            assert_eq!(copy_field::<u32>(base, 4), Some(42));
+            assert_eq!(copy_field::<u32>(0, 4), None);
+            assert_eq!(copy_field::<u32>(usize::MAX, 1), None);
+            assert_eq!(copy_field::<u32>(usize::MAX - 1, 0), None);
+            assert_eq!(copy_field::<u32>(1, 0), None);
+        }
+    }
+
+    #[test]
+    fn copy_field_rejects_a_partial_copy_across_an_inaccessible_page() {
+        let size = page_size();
+        let allocation = Pages::new(size * 2);
+        allocation.protect(size, PAGE_NOACCESS);
+        let base = allocation.base();
+        unsafe {
+            assert_eq!(copy_field::<u32>(base, size - 4), Some(0));
+            assert_eq!(copy_field::<u64>(base, size - 4), None);
+            assert_eq!(copy_field::<u32>(base, size), None);
+        }
+    }
+
     #[test]
     fn strings_copy_inline_and_heap_data_and_validate_capacity_and_bounds() {
         let mut inline = [0u64; 4];

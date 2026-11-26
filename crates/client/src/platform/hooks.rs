@@ -2,8 +2,34 @@
 //! is inside a detour, so the DLL may be unloaded.
 use hudhook::mh::{MH_DisableHook, MH_STATUS};
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use windows_sys::Win32::System::Threading::Sleep;
+
+/// Stop invoking an optional Rust callback after its first panic. The native
+/// hook can still call or return the original game function.
+pub(crate) struct PanicFuse(AtomicBool);
+
+impl PanicFuse {
+    pub const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    pub fn tripped(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
+    pub fn run(&self, callback: impl FnOnce()) {
+        if !self.tripped() {
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(callback)) {
+                self.0.store(true, Ordering::Release);
+                // Dropping a custom panic payload can itself panic at the FFI
+                // boundary. Keep it for the lifetime of this failed process.
+                std::mem::forget(payload);
+            }
+        }
+    }
+}
 
 /// Disables the hook at `target`; one already disabled counts as done.
 /// False if MinHook refuses (the caller must then keep the DLL mapped).
@@ -30,6 +56,18 @@ pub(crate) fn drain(in_flight: &AtomicUsize, sleep_ms: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn panic_fuse_skips_callbacks_after_a_panic_and_allows_the_caller_to_continue() {
+        let fuse = PanicFuse::new();
+        let mut calls = 0;
+        fuse.run(|| calls += 1);
+        assert!(!fuse.tripped());
+        fuse.run(|| panic!("callback panic"));
+        assert!(fuse.tripped());
+        fuse.run(|| calls += 1);
+        assert_eq!(calls, 1);
+    }
+
     #[test]
     fn drain_returns_once_calls_leave_and_reports_a_stuck_call() {
         let idle = AtomicUsize::new(0);

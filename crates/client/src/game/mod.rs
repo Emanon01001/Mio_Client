@@ -45,7 +45,7 @@ pub(crate) use layout::ACCESSOR_PATCH_OFFSET;
 pub(crate) use layout::SUPPORTED;
 pub use layout::{actions_build, available, init, known_build};
 use layout::{layout, Layout, LAYOUT};
-use memory::span;
+use memory::{copy_field, span};
 pub(crate) use memory::{read, readable, string};
 use sdk::{sdk_frame, sdk_velocity};
 
@@ -74,6 +74,7 @@ static USERS: Mutex<usize> = Mutex::new(0);
 /// implied by `USERS > 0`: a `release` whose detour did not drain in time
 /// keeps its user but has already disabled the hook.
 static ENABLED: AtomicBool = AtomicBool::new(false);
+static SAMPLE_FUSE: crate::hooks::PanicFuse = crate::hooks::PanicFuse::new();
 
 static X: AtomicI32 = AtomicI32::new(0);
 static Y: AtomicI32 = AtomicI32::new(0);
@@ -97,32 +98,48 @@ static BOXES_AT: AtomicU64 = AtomicU64::new(0);
 /// Bounding boxes of every entity except the local player.
 static BOXES: LazyLock<snapshot::Snapshot<(u32, Aabb)>> = LazyLock::new(snapshot::Snapshot::new);
 
-unsafe fn sample(l: &Layout, client: *const u8) {
+unsafe fn local_player(l: &Layout, instance: usize) -> Option<usize> {
+    let vtable = copy_field::<usize>(instance, 0)?;
+    let (base, end) = layout::image();
+    if !(base..end).contains(&vtable)
+        || vtable
+            .checked_add(l.vt_local_player)?
+            .checked_add(size_of::<usize>())?
+            > end
+    {
+        return None;
+    }
+    let getter = copy_field::<usize>(vtable, l.vt_local_player)?;
+    if !layout::is_code_address(getter) {
+        return None;
+    }
+    let get: unsafe extern "system" fn(*const c_void) -> *const u8 = std::mem::transmute(getter);
+    Some(get(instance as *const c_void) as usize)
+}
+
+unsafe fn sample(l: &Layout, client: *const u8) -> Option<()> {
     let _profile = Scope::new(Stage::NativeSample);
-    // These offsets come from the accessor's own code, and the accessor has
-    // just dereferenced the same pointers successfully.
-    let instance: usize = read(client as usize + l.client_instance);
+    // The game may have taken a different path through the original accessor.
+    // Validate each field we copy, including during scene transitions.
+    let instance = copy_field::<usize>(client as usize, l.client_instance)?;
     if instance == 0 {
         terrain_session::observe_presence(false, GetTickCount64());
         player_roster::clear();
-        return;
+        return None;
     }
-    let vtable: usize = read(instance);
-    let local_player: unsafe extern "system" fn(*const c_void) -> *const u8 =
-        std::mem::transmute(read::<usize>(vtable + l.vt_local_player));
-    let player = local_player(instance as *const c_void) as usize;
+    let player = local_player(l, instance)?;
     terrain_session::observe_presence(player != 0, GetTickCount64());
     if player == 0 {
         player_roster::clear();
-        return;
+        return None;
     }
-    let state: usize = read(player + l.actor_state);
-    let bounds: usize = read(player + l.actor_aabb);
-    if state == 0 || bounds == 0 {
-        return;
+    let state: usize = copy_field(player, l.actor_state)?;
+    let bounds: usize = copy_field(player, l.actor_aabb)?;
+    let eye: [f32; 3] = copy_field(state, 0)?;
+    let feet: f32 = copy_field(bounds, 4)?;
+    if !eye.into_iter().all(f32::is_finite) || !feet.is_finite() {
+        return None;
     }
-    let eye: [f32; 3] = read(state);
-    let feet: f32 = read(bounds + 4);
     let now = GetTickCount64();
     X.store(eye[0].floor() as i32, Ordering::Relaxed);
     Y.store(feet.floor() as i32, Ordering::Relaxed);
@@ -163,9 +180,11 @@ unsafe fn sample(l: &Layout, client: *const u8) {
     let look = blocks::look_wanted();
     let flight = blocks::flight::wanted();
     let feed = hits::wanted();
-    if (look || flight || feed) && readable(instance + l.view_matrix, 48) {
+    if let Some(view) = (look || flight || feed)
+        .then(|| copy_field::<[f32; 12]>(instance, l.view_matrix))
+        .flatten()
+    {
         // The view basis is (right, up, back); the camera looks along -back.
-        let view: [f32; 12] = read(instance + l.view_matrix);
         let forward = [-view[8], -view[9], -view[10]];
         if look {
             let _scope = Scope::new(Stage::LookSample);
@@ -209,6 +228,11 @@ unsafe fn sample(l: &Layout, client: *const u8) {
     // `client` is the live ClientInstanceScreenModel used by both this HUD
     // property and normal chat submission. Never retain this native pointer.
     crate::native_chat::repeat::sample(client as usize, instance, player);
+    Some(())
+}
+
+pub(crate) fn sampling_failed() -> bool {
+    SAMPLE_FUSE.tripped()
 }
 
 unsafe extern "system" fn detour(client: *const u8) -> u8 {
@@ -217,7 +241,9 @@ unsafe extern "system" fn detour(client: *const u8) -> u8 {
     // The original validates `client` (and faults exactly as the game would).
     let result = original(client);
     if let Some(Ok(layout)) = LAYOUT.get() {
-        sample(layout, client);
+        SAMPLE_FUSE.run(|| {
+            let _ = sample(layout, client);
+        });
     }
     IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
     result

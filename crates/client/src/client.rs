@@ -327,7 +327,7 @@ pub fn run(hmodule: HMODULE) -> bool {
     );
     // The in-game console lives in the overlay; without it, or on request,
     // open a console window (it replays what was logged so far).
-    let window = config.gui.console_window || !overlay;
+    let window = config.gui.console_window || overlay != gui::Overlay::Active;
     let owns_console = window && console::attach();
     let reader = if window { Reader::spawn(tx) } else { None };
     // From here on, switching a feature shows a notification.
@@ -335,6 +335,10 @@ pub fn run(hmodule: HMODULE) -> bool {
     modules::world_map::start_storage(&config.dir, &config.worldmap);
 
     loop {
+        if crate::game::sampling_failed() {
+            log!("ゲーム状態の取得中にエラーが発生しました。Mio Clientを停止します");
+            break;
+        }
         let signaled = !eject_event.is_null()
             && unsafe { WaitForSingleObject(eject_event, 0) } == WAIT_OBJECT_0;
         let focused = input::is_foreground();
@@ -430,13 +434,17 @@ pub fn run(hmodule: HMODULE) -> bool {
         unsafe { CloseHandle(eject_event) };
     }
 
-    let unload = timer_ok && reader_ok && game_ok && visual_ok && net_ok;
+    let overlay_ok = overlay != gui::Overlay::RetainDll;
+    let unload = timer_ok && reader_ok && game_ok && visual_ok && net_ok && overlay_ok;
     if unload {
         log!("クライアントを解除しました");
     } else {
         log!("全機能を無効にしました。DLLはゲームを再起動するまで残ります");
         if !timer_ok {
             log!("（時刻の逆行を防ぐため、ゲーム速度の時計フックを保持しています）");
+        }
+        if !overlay_ok {
+            log!("（描画フックの解除を確認できないため、ゲーム終了までDLLを保持します）");
         }
         if !visual_ok {
             log!("（視界のフックが実行中のため、ゲーム終了まで保持します）");
@@ -450,7 +458,7 @@ pub fn run(hmodule: HMODULE) -> bool {
     }
     console::detach(owns_console);
 
-    if unload && overlay {
+    if unload && overlay == gui::Overlay::Active {
         // hudhook removes its render hooks on the next frame and then frees
         // the DLL itself; unloading here would pull code out from under it.
         hudhook::eject();

@@ -153,6 +153,20 @@ pub(in crate::game) fn image() -> (usize, usize) {
     })
 }
 
+/// A virtual call resolved from a game object must target the game's code.
+pub(in crate::game) fn is_code_address(address: usize) -> bool {
+    static TEXT: OnceLock<Option<std::ops::Range<usize>>> = OnceLock::new();
+    TEXT.get_or_init(|| {
+        let game = Running::new()?;
+        let (rva, len) = game.section(".text")?;
+        let start = game.base.checked_add(rva)?;
+        let end = start.checked_add(len)?;
+        (end <= image().1).then_some(start..end)
+    })
+    .as_ref()
+    .is_some_and(|text| text.contains(&address))
+}
+
 /// The analyzed build that is running, if it is one of `BUILDS`.
 fn build() -> Option<&'static Build> {
     static BUILD: OnceLock<Option<usize>> = OnceLock::new();

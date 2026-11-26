@@ -45,6 +45,8 @@ pub static EJECT_REQUESTED: AtomicBool = AtomicBool::new(false);
 pub static DORMANT: AtomicBool = AtomicBool::new(false);
 // Keep the closing Esc out of native input until it has been released.
 static ESCAPE_CLOSING: AtomicBool = AtomicBool::new(false);
+// An error from applying multiple graphics hooks can leave some installed.
+static OVERLAY_START_FAILED: AtomicBool = AtomicBool::new(false);
 static RENDER_API: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 pub(crate) fn renderer_name() -> &'static str {
     match RENDER_API.load(Ordering::Relaxed) {
@@ -123,6 +125,10 @@ fn item_atlas() -> Option<modules::item_hud::icons::Atlas> {
     }
 }
 
+fn overlay_inactive() -> bool {
+    DORMANT.load(Ordering::Acquire) || OVERLAY_START_FAILED.load(Ordering::Acquire)
+}
+
 /// Shared by Windows message filtering and native mouse/attack callbacks, since the
 /// game can receive input through paths that bypass its window procedure.
 /// The overlay takes the mouse and keyboard while a menu/map is open, and
@@ -131,7 +137,7 @@ pub(crate) fn captures_input() -> bool {
     (MENU_OPEN.load(Ordering::Acquire)
         || MAP_OPEN.load(Ordering::Acquire)
         || ESCAPE_CLOSING.load(Ordering::Acquire))
-        && !DORMANT.load(Ordering::Acquire)
+        && !overlay_inactive()
 }
 
 /// An Esc that closed the menu (or map) is still held down.
@@ -149,7 +155,7 @@ pub(crate) fn hold_escape() {
 
 /// The menu (and console) is open.
 pub(crate) fn menu_open() -> bool {
-    MENU_OPEN.load(Ordering::Acquire) && !DORMANT.load(Ordering::Acquire)
+    MENU_OPEN.load(Ordering::Acquire) && !overlay_inactive()
 }
 
 fn menu_state(open: bool, was_down: bool, down: bool, focused: bool, dormant: bool) -> bool {
@@ -487,6 +493,9 @@ impl ImguiRenderLoop for Gui {
         wparam: hudhook::windows::Win32::Foundation::WPARAM,
         lparam: hudhook::windows::Win32::Foundation::LPARAM,
     ) -> hudhook::BeforeWndProc {
+        if overlay_inactive() {
+            return hudhook::BeforeWndProc::Continue;
+        }
         modules::settings::key_capture::message(message, wparam.0, lparam.0);
         if escape_press(message, wparam.0, lparam.0)
             && escape_closes_menu(
@@ -524,7 +533,7 @@ impl ImguiRenderLoop for Gui {
     }
 
     fn render(&mut self, ui: &mut Ui) {
-        if DORMANT.load(Ordering::Relaxed) {
+        if overlay_inactive() {
             modules::settings::key_capture::cancel();
             self.open = false;
             self.confine_cursor(false);
@@ -613,6 +622,9 @@ impl ImguiRenderLoop for Gui {
     }
 
     fn message_filter(&self, io: &Io) -> MessageFilter {
+        if overlay_inactive() {
+            return MessageFilter::empty();
+        }
         // hudhook calls this before before_render/render: update capture here,
         // so its window filter and native mouse gate see the same frame.
         modules::settings::key_capture::refresh();
@@ -647,7 +659,7 @@ impl ImguiRenderLoop for Gui {
                     // it still respects popup, key capture and HUD priorities.
                     && !(self.menu_key == 0x1b && open)
                     && !ESCAPE_CLOSING.load(Ordering::Acquire),
-                    DORMANT.load(Ordering::Acquire),
+                    overlay_inactive(),
                 ),
             Ordering::Release,
         );
@@ -665,17 +677,24 @@ fn module_loaded(name: &str) -> bool {
     !unsafe { GetModuleHandleW(wide.as_ptr()) }.is_null()
 }
 
-/// Installs the render hooks. Returns true if the overlay is active (in which
-/// case unloading the DLL must go through `hudhook::eject`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Overlay {
+    Disabled,
+    Active,
+    RetainDll,
+}
+
+/// Installs the render hooks. If applying the hooks fails partway through,
+/// the DLL must remain mapped because callbacks may still point into it.
 pub fn start(
     hmodule: HMODULE,
     cfg: &config::Gui,
     eject_key: u16,
     modules: Arc<Mutex<Modules>>,
     profiles: Arc<Mutex<crate::profiles::Profiles>>,
-) -> bool {
+) -> Overlay {
     if !cfg.enabled {
-        return false;
+        return Overlay::Disabled;
     }
     crate::notify::set_enabled(cfg.notifications);
     let dx12 = match cfg.renderer.to_ascii_lowercase().as_str() {
@@ -724,18 +743,18 @@ pub fn start(
 
     let hmodule = hmodule as usize;
     // hudhook panics on some setup failures; never let that reach the game.
-    let result = std::panic::catch_unwind(move || {
+    let mut applying = false;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let builder = Hudhook::builder();
         let builder = if dx12 {
             builder.with::<ImguiDx12Hooks>(gui)
         } else {
             builder.with::<ImguiDx11Hooks>(gui)
         };
-        builder
-            .with_hmodule(HINSTANCE(hmodule as _))
-            .build()
-            .apply()
-    });
+        let hooks = builder.with_hmodule(HINSTANCE(hmodule as _)).build();
+        applying = true;
+        hooks.apply()
+    }));
 
     let api = if dx12 { "DX12" } else { "DX11" };
     match result {
@@ -745,15 +764,19 @@ pub fn start(
                 "オーバーレイを開始しました（{api}）。{}でメニューを開きます",
                 input::display_key_name(menu_key)
             );
-            true
+            return Overlay::Active;
         }
         Ok(Err(e)) => {
             log!("オーバーレイの開始に失敗（{api}）: {e:?}。別ウィンドウのコンソールを使います");
-            false
         }
         Err(_) => {
             log!("オーバーレイの初期化中にエラー（{api}）。別ウィンドウのコンソールを使います");
-            false
         }
+    }
+    if applying {
+        OVERLAY_START_FAILED.store(true, Ordering::Release);
+        Overlay::RetainDll
+    } else {
+        Overlay::Disabled
     }
 }
