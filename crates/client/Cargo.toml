@@ -24,6 +24,9 @@ serde_json.workspace = true
 sigscan.workspace = true
 toml.workspace = true
 
+[build-dependencies]
+embed-resource.workspace = true
+
 [dependencies.windows-sys]
 workspace = true
 features = [

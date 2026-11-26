@@ -72,14 +72,22 @@ impl App {
         let baseline =
             (!self.baseline.trim().is_empty()).then(|| PathBuf::from(self.baseline.trim()));
         let (tx, rx) = mpsc::channel();
-        self.job = Some(rx);
-        self.report = None;
-        self.message = None;
         let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(audit_file(&exe, baseline.as_deref()).map(Box::new));
-            ctx.request_repaint();
-        });
+        match std::thread::Builder::new()
+            .name("Mio signature audit".into())
+            .spawn(move || {
+                let _ = tx.send(audit_file(&exe, baseline.as_deref()).map(Box::new));
+                ctx.request_repaint();
+            }) {
+            Ok(_) => {
+                self.job = Some(rx);
+                self.report = None;
+                self.message = None;
+            }
+            Err(error) => {
+                self.message = Some(format!("検証スレッドを開始できませんでした: {error}"));
+            }
+        }
     }
     fn poll(&mut self) {
         let Some(job) = &self.job else {

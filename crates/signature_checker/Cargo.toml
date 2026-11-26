@@ -21,7 +21,7 @@ name = "mio_signature_checker_cli"
 path = "src/bin/cli.rs"
 
 [dependencies]
-eframe = { workspace = true, optional = true }
+eframe = { workspace = true, features = ["clipboard"], optional = true }
 png = { workspace = true, optional = true }
 rfd = { workspace = true, optional = true }
 serde.workspace = true
@@ -31,3 +31,6 @@ sigscan.workspace = true
 [target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true
 features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Memory"]
+
+[build-dependencies]
+embed-resource.workspace = true
