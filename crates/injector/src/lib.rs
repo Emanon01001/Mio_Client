@@ -2,7 +2,7 @@
 //! (`mio_injector_gui`).
 
 use std::ffi::c_void;
-use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 
@@ -18,9 +18,9 @@ use windows_sys::Win32::System::Memory::{
     VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateRemoteThread, GetExitCodeThread, OpenEventW, OpenProcess, SetEvent, WaitForSingleObject,
-    EVENT_MODIFY_STATE, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION,
-    PROCESS_VM_READ, PROCESS_VM_WRITE,
+    CreateRemoteThread, GetExitCodeThread, OpenEventW, OpenProcess, QueryFullProcessImageNameW,
+    SetEvent, WaitForSingleObject, EVENT_MODIFY_STATE, PROCESS_CREATE_THREAD, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
 };
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 
@@ -42,6 +42,34 @@ impl Drop for Handle {
 
 fn last_error(what: &str) -> String {
     format!("{what} failed (error {})", unsafe { GetLastError() })
+}
+
+fn process_image(process: &Handle) -> Result<PathBuf, String> {
+    let mut path = vec![0u16; 32_768];
+    let mut len = path.len() as u32;
+    let ok = unsafe {
+        QueryFullProcessImageNameW(process.0, PROCESS_NAME_WIN32, path.as_mut_ptr(), &mut len)
+    };
+    if ok == 0 {
+        return Err(last_error("QueryFullProcessImageNameW"));
+    }
+    Ok(std::ffi::OsString::from_wide(&path[..len as usize]).into())
+}
+
+fn verify_compatibility(exe: &Path) -> Result<(), String> {
+    use mio_signature_check::{audit_file, summary, Outcome};
+
+    let report = audit_file(exe, None)
+        .map_err(|error| format!("Cannot verify compatibility for {}: {error}", exe.display()))?;
+    if report.outcome == Outcome::StaticChecksPassed {
+        return Ok(());
+    }
+    let reason = if report.recorded_build.is_none() {
+        "The Minecraft build is not in the compatibility list."
+    } else {
+        "The Minecraft build did not pass the static compatibility checks."
+    };
+    Err(format!("{reason}\n{}\n{}", exe.display(), summary(&report)))
 }
 
 /// The path belongs to the loader thread until that thread is known to have
@@ -132,6 +160,12 @@ pub fn inject(pid: u32, dll: &Path) -> Result<(), String> {
             return Err(last_error("OpenProcess"));
         }
         let process = Handle(process);
+        // Check the executable associated with this handle on each request.
+        // The path used by the standalone scanner may point to another build.
+        let exe = process_image(&process).map_err(|error| {
+            format!("Cannot identify the running Minecraft executable: {error}")
+        })?;
+        verify_compatibility(&exe)?;
 
         let remote = VirtualAllocEx(
             process.0,
@@ -258,6 +292,21 @@ mod tests {
     use windows_sys::Win32::System::Threading::{
         CreateEventW, CreateThread, GetCurrentProcessId, INFINITE,
     };
+
+    #[test]
+    fn preflight_rejects_an_unrecognized_running_executable() {
+        let process =
+            Handle(unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, 0, GetCurrentProcessId()) });
+        assert!(!process.0.is_null());
+        let image = process_image(&process).unwrap();
+        assert_eq!(
+            image.canonicalize().unwrap(),
+            std::env::current_exe().unwrap().canonicalize().unwrap()
+        );
+        let error = verify_compatibility(&image).unwrap_err();
+        assert!(error.contains("not in the compatibility list"), "{error}");
+    }
+
     unsafe extern "system" fn loader_wait(event: *mut c_void) -> u32 {
         WaitForSingleObject(event, INFINITE);
         1

@@ -20,6 +20,7 @@ path = "src/bin/mio_launcher.rs"
 eframe.workspace = true
 png.workspace = true
 rfd.workspace = true
+signature-checker = { path = "../signature_checker", default-features = false }
 sigscan.workspace = true
 
 [build-dependencies]

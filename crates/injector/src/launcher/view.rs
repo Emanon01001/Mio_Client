@@ -205,7 +205,7 @@ impl App {
                     ui.add(egui::Spinner::new().size(18.).color(ACCENT));
                     ui.label(match job.action {
                         Action::Launch => "Requesting Minecraft launch…",
-                        Action::Inject => "Injecting Mio Client…",
+                        Action::Inject => "Checking Minecraft compatibility…",
                         Action::Eject => "Requesting client eject…",
                     });
                 });
